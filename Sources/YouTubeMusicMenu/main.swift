@@ -5,13 +5,34 @@ let musicURL = URL(string: "https://music.youtube.com")!
 // A named store keeps this app's Google login apart from Safari and every other app.
 let storeID = UUID(uuidString: "5C1B6E2A-3F4D-4A8B-9E7C-2D1F0A6B8C3E")!
 
+// Runs in the page and tells the app when playback starts, pauses or changes song.
+// The title is read from the player bar, since the one published for macOS can be shortened
+// (e.g. "Zhong Shen Mei Li" for "終身美麗 - Zhong Shen Mei Li"); the published one is the fallback.
+let playerScript = """
+(() => {
+    let last = '';
+    const report = () => {
+        const video = document.querySelector('video');
+        const title = document.querySelector('ytmusic-player-bar .title')?.textContent.trim()
+            || navigator.mediaSession.metadata?.title || '';
+        const state = { playing: !!video && !video.paused, title };
+        const json = JSON.stringify(state);
+        if (json !== last) { last = json; webkit.messageHandlers.player.postMessage(state); }
+    };
+    // Media events don't bubble, but a capturing listener on document still sees them.
+    // The second report catches song info that the page sets just after playback starts.
+    for (const type of ['play', 'pause', 'loadeddata'])
+        document.addEventListener(type, () => { report(); setTimeout(report, 1000); }, true);
+})();
+"""
+
 // Lets the first click on the panel reach the page instead of only focusing the panel.
 final class WebView: WKWebView {
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 }
 
-final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate {
-    let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
+final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKScriptMessageHandler {
+    let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     let panel = NSPanel(
         contentRect: NSRect(x: 0, y: 0, width: 480, height: 720),
         styleMask: [.titled, .resizable, .fullSizeContentView, .nonactivatingPanel],
@@ -20,11 +41,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate {
     var openTimer: Timer?
     var closeTimer: Timer?
     var ticksOutside = 0
+    var hasSong = false
 
     // Created on first open, so the app stays small until it's used.
     lazy var webView: WKWebView = {
         let config = WKWebViewConfiguration()
         config.websiteDataStore = WKWebsiteDataStore(forIdentifier: storeID)
+        config.userContentController.addUserScript(
+            WKUserScript(source: playerScript, injectionTime: .atDocumentEnd, forMainFrameOnly: true))
+        config.userContentController.add(self, name: "player")
         // Google blocks sign-in from browsers it doesn't recognize, so identify as Safari.
         config.applicationNameForUserAgent = "Version/26.0 Safari/605.1.15"
         let webView = WebView(frame: panel.contentLayoutRect, configuration: config)
@@ -37,7 +62,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         let button = statusItem.button!
-        button.image = NSImage(systemSymbolName: "music.note", accessibilityDescription: "YouTube Music")
+        button.image = NSImage(systemSymbolName: "play.rectangle", accessibilityDescription: "YouTube Music")
+        button.imagePosition = .imageLeading
         button.target = self
         button.action = #selector(iconClicked)
         button.sendAction(on: [.leftMouseUp, .rightMouseUp])
@@ -88,9 +114,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate {
             statusItem.menu = menu
             statusItem.button!.performClick(nil)
             statusItem.menu = nil
+        } else if hasSong {
+            // A click means play/pause, so don't also pop the panel open.
+            openTimer?.invalidate()
+            webView.evaluateJavaScript(
+                "(v => v && (v.paused ? v.play() : v.pause()))(document.querySelector('video'))")
         } else {
             showPanel()
         }
+    }
+
+    // Updates the icon and title whenever the page reports a change.
+    func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
+        guard let state = message.body as? [String: Any], let button = statusItem.button else { return }
+        let playing = state["playing"] as? Bool ?? false
+        let title = state["title"] as? String ?? ""
+        hasSong = !title.isEmpty
+        button.image = NSImage(
+            systemSymbolName: playing || !hasSong ? "play.rectangle" : "pause.rectangle",
+            accessibilityDescription: "YouTube Music")
+        button.title = title.count > 20 ? title.prefix(20).trimmingCharacters(in: .whitespaces) + "…" : title
     }
 
     @objc func showPanel() {
