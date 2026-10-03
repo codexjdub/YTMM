@@ -9,23 +9,29 @@ let storeID = UUID(uuidString: "5C1B6E2A-3F4D-4A8B-9E7C-2D1F0A6B8C3E")!
 let playerVideo = "(document.querySelector('video.html5-main-video') || document.querySelector('video'))"
 
 // Runs in the page and tells the app when playback starts, pauses or changes song.
-// The title is read from the player bar, since the one published for macOS can be shortened
-// (e.g. "Zhong Shen Mei Li" for "終身美麗 - Zhong Shen Mei Li"); the published one is the fallback.
+// The title and artist are read from the player bar, since the ones published for macOS can be shortened
+// (e.g. "Zhong Shen Mei Li" for "終身美麗 - Zhong Shen Mei Li"). The published ones are the fallback,
+// e.g. during ads, when the player bar has no title and its artist line says "Video will play after ad".
 let playerScript = """
 (() => {
     let last = '', watched = null;
     const observer = new MutationObserver(() => report());
     const report = () => {
         const video = \(playerVideo);
-        // Watch the title itself, so a title that changes after the media events still gets through.
-        const titleElement = document.querySelector('ytmusic-player-bar .title');
-        if (titleElement && titleElement !== watched) {
+        // Watch the title and artist themselves, so changes after the media events still get through.
+        const info = document.querySelector('ytmusic-player-bar .content-info-wrapper');
+        if (info && info !== watched) {
             observer.disconnect();
-            observer.observe(titleElement, { childList: true, characterData: true, subtree: true });
-            watched = titleElement;
+            observer.observe(info, { childList: true, characterData: true, subtree: true });
+            watched = info;
         }
-        const title = titleElement?.textContent.trim() || navigator.mediaSession.metadata?.title || '';
-        const state = { playing: !!video && !video.paused, title };
+        const title = info?.querySelector('.title')?.textContent.trim();
+        const published = navigator.mediaSession.metadata;
+        // The artist line can go on with the album and year, or a video's views; keep what's before the first "•".
+        const state = title
+            ? { playing: !!video && !video.paused, title,
+                artist: info.querySelector('.byline')?.textContent.split('•')[0].trim() || '' }
+            : { playing: !!video && !video.paused, title: published?.title || '', artist: published?.artist || '' };
         const json = JSON.stringify(state);
         if (json !== last) { last = json; webkit.messageHandlers.player.postMessage(state); }
     };
@@ -59,7 +65,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKNaviga
     var openTimer: Timer?
     var closeTimer: Timer?
     var ticksOutside = 0
-    var hasSong = false
+    var song = (playing: false, title: "", artist: "")
+    var hasSong: Bool { !song.title.isEmpty }
     var scrollTotal: CGFloat = 0
     var scrollSkipped = false
     var lastWheelSkip: TimeInterval = 0
@@ -85,6 +92,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKNaviga
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        UserDefaults.standard.register(defaults: ["showArtist": true])
         let button = statusItem.button!
         button.imagePosition = .imageLeading
         button.target = self
@@ -93,7 +101,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKNaviga
         button.addTrackingArea(NSTrackingArea(
             rect: .zero, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect],
             owner: self, userInfo: nil))
-        updateStatus(playing: false, title: "")
+        updateStatus()
 
         // Scrolling on the icon changes songs. The icon lives in this app's own window,
         // so its scroll events reach this app even while another app is active.
@@ -103,6 +111,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKNaviga
             return nil
         }
 
+        let artistItem = menu.addItem(withTitle: "Show Artist", action: #selector(toggleArtist), keyEquivalent: "")
+        artistItem.target = self
+        artistItem.state = UserDefaults.standard.bool(forKey: "showArtist") ? .on : .off
+        menu.addItem(.separator())
         menu.addItem(withTitle: "Reload", action: #selector(reload), keyEquivalent: "").target = self
         menu.addItem(withTitle: "Sign Out", action: #selector(signOut), keyEquivalent: "").target = self
         menu.addItem(.separator())
@@ -201,26 +213,48 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKNaviga
         // Links can take the panel to other sites; only YouTube Music may change the menu bar.
         guard message.frameInfo.securityOrigin.host == musicURL.host,
               let state = message.body as? [String: Any] else { return }
-        updateStatus(playing: state["playing"] as? Bool ?? false, title: state["title"] as? String ?? "")
+        song = (state["playing"] as? Bool ?? false, state["title"] as? String ?? "", state["artist"] as? String ?? "")
+        updateStatus()
     }
 
-    func updateStatus(playing: Bool, title: String) {
+    // Shows the current song: the play or pause icon, then the title with the artist dimmed after it.
+    // A long title is cut first; the artist keeps at least a third of the room.
+    func updateStatus() {
         guard let button = statusItem.button else { return }
-        hasSong = !title.isEmpty
         button.image = NSImage(
-            systemSymbolName: playing || !hasSong ? "play.circle" : "pause.circle",
+            systemSymbolName: song.playing || !hasSong ? "play.circle" : "pause.circle",
             accessibilityDescription: "YouTube Music")
-        button.title = fitted(title, font: button.font ?? .menuBarFont(ofSize: 0))
+        let font = button.font ?? .menuBarFont(ofSize: 0)
+        guard hasSong, !song.artist.isEmpty, UserDefaults.standard.bool(forKey: "showArtist") else {
+            button.title = fitted(song.title, font: font)
+            return
+        }
+        let room = 220 - width(" · ", font)
+        let artist = fitted(song.artist, font: font, maxWidth: max(room / 3, room - width(song.title, font)))
+        let title = NSMutableAttributedString(
+            string: fitted(song.title, font: font, maxWidth: room - width(artist, font)), attributes: [.font: font])
+        title.append(NSAttributedString(
+            string: " · " + artist, attributes: [.font: font, .foregroundColor: NSColor.secondaryLabelColor]))
+        button.attributedTitle = title
     }
 
-    // Cuts the title by width rather than characters, since wide (e.g. CJK) text could otherwise
+    @objc func toggleArtist(_ item: NSMenuItem) {
+        item.state = item.state == .on ? .off : .on
+        UserDefaults.standard.set(item.state == .on, forKey: "showArtist")
+        updateStatus()
+    }
+
+    // Cuts text by width rather than characters, since wide (e.g. CJK) text could otherwise
     // make the item too wide for the menu bar, and macOS would hide it, icon and all.
-    func fitted(_ title: String, font: NSFont, maxWidth: CGFloat = 150) -> String {
-        let width = { (s: String) in (s as NSString).size(withAttributes: [.font: font]).width }
-        guard width(title) > maxWidth else { return title }
-        var cut = title
-        while !cut.isEmpty && width(cut + "…") > maxWidth { cut.removeLast() }
+    func fitted(_ text: String, font: NSFont, maxWidth: CGFloat = 150) -> String {
+        guard width(text, font) > maxWidth else { return text }
+        var cut = text
+        while !cut.isEmpty && width(cut + "…", font) > maxWidth { cut.removeLast() }
         return cut.trimmingCharacters(in: .whitespaces) + "…"
+    }
+
+    func width(_ text: String, _ font: NSFont) -> CGFloat {
+        (text as NSString).size(withAttributes: [.font: font]).width
     }
 
     @objc func showPanel() {
@@ -338,7 +372,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKNaviga
 
     // A new page (reload, sign-in, sign-out) starts with nothing playing.
     func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
-        updateStatus(playing: false, title: "")
+        song = (false, "", "")
+        updateStatus()
     }
 
     // If macOS kills the page's process, e.g. under memory pressure, start it again.
