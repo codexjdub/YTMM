@@ -8,23 +8,38 @@ let storeID = UUID(uuidString: "5C1B6E2A-3F4D-4A8B-9E7C-2D1F0A6B8C3E")!
 // YouTube's player <video>, or the first video if YouTube renames it.
 let playerVideo = "(document.querySelector('video.html5-main-video') || document.querySelector('video'))"
 
-// Runs in the page and tells the app when playback starts, pauses or changes song.
+// Runs in the page and tells the app when playback starts, pauses or changes song,
+// and whether the lyrics are showing.
 // The title and artist are read from the player bar, since the ones published for macOS can be shortened
 // (e.g. "Zhong Shen Mei Li" for "終身美麗 - Zhong Shen Mei Li"). The published ones are the fallback,
 // e.g. during ads, when the player bar has no title and its artist line says "Video will play after ad".
 let playerScript = """
 (() => {
-    let last = '', watched = null;
-    const observer = new MutationObserver(() => report());
+    let last = '';
+    // Watches an element for changes, moving on to its replacement if YouTube swaps it out.
+    const watcher = options => {
+        let watched = null;
+        const observer = new MutationObserver(() => report());
+        return element => {
+            if (!element || element === watched) return;
+            observer.disconnect();
+            observer.observe(element, options);
+            watched = element;
+        };
+    };
+    const watchInfo = watcher({ childList: true, characterData: true, subtree: true });
+    const watchLayout = watcher({ attributes: true, attributeFilter: ['player-page-open'] });
+    const watchTabs = watcher({ attributes: true, attributeFilter: ['aria-selected'], subtree: true });
     const report = () => {
         const video = \(playerVideo);
-        // Watch the title and artist themselves, so changes after the media events still get through.
+        // Watch the song info, the now-playing view and its tabs themselves, so changes that come
+        // without media events still get through.
         const info = document.querySelector('ytmusic-player-bar .content-info-wrapper');
-        if (info && info !== watched) {
-            observer.disconnect();
-            observer.observe(info, { childList: true, characterData: true, subtree: true });
-            watched = info;
-        }
+        const layout = document.querySelector('ytmusic-app-layout');
+        const tabs = document.querySelectorAll('ytmusic-player-page tp-yt-paper-tab.tab-header');
+        watchInfo(info);
+        watchLayout(layout);
+        watchTabs(tabs[0]?.parentElement);
         const title = info?.querySelector('.title')?.textContent.trim();
         const published = navigator.mediaSession.metadata;
         // The artist line can go on with the album and year, or a video's views; keep what's before the first "•".
@@ -32,6 +47,8 @@ let playerScript = """
             ? { playing: !!video && !video.paused, title,
                 artist: info.querySelector('.byline')?.textContent.split('•')[0].trim() || '' }
             : { playing: !!video && !video.paused, title: published?.title || '', artist: published?.artist || '' };
+        // Lyrics is the second tab (by position, so any language works).
+        state.lyrics = !!layout?.hasAttribute('player-page-open') && tabs[1]?.getAttribute('aria-selected') === 'true';
         const json = JSON.stringify(state);
         if (json !== last) { last = json; webkit.messageHandlers.player.postMessage(state); }
     };
@@ -60,6 +77,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKNaviga
     let menu = NSMenu()
     let pinButton = StripButton()
     let compactButton = StripButton()
+    let lyricsButton = StripButton()
     lazy var store = WKWebsiteDataStore(forIdentifier: storeID)
     var webView: WKWebView?
     var openTimer: Timer?
@@ -134,16 +152,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKNaviga
         }
         panel.setFrameAutosaveName("Panel")
 
-        // Toggles in the panel's top strip: compact player, and pin (keeps the panel open).
+        // Buttons in the panel's top strip: lyrics, and the toggles for compact player and pin (keeps the panel open).
+        lyricsButton.isBordered = false
+        lyricsButton.font = .systemFont(ofSize: 12, weight: .medium)
+        lyricsButton.target = self
+        lyricsButton.action = #selector(showLyrics)
+        // Sized for the longer label, so the buttons beside it stay put when the label changes.
+        lyricsButton.title = "Up next"
+        let lyricsWidth = lyricsButton.fittingSize.width
+        lyricsButton.widthAnchor.constraint(equalToConstant: lyricsWidth).isActive = true
+        lyricsButton.title = "Lyrics"
         setUpStripButton(compactButton, "arrow.down.right.and.arrow.up.left", on: "arrow.up.left.and.arrow.down.right",
                          tip: "Compact player")
         compactButton.target = self
         compactButton.action = #selector(toggleCompact)
         compactButton.state = UserDefaults.standard.bool(forKey: "compact") ? .on : .off
         setUpStripButton(pinButton, "pin", on: "pin.fill", tip: "Keep the panel open")
-        let strip = NSStackView(views: [compactButton, pinButton])
+        let strip = NSStackView(views: [lyricsButton, compactButton, pinButton])
         strip.spacing = 0
-        strip.frame.size = NSSize(width: 72, height: 28)
+        strip.setCustomSpacing(8, after: lyricsButton)
+        strip.frame.size = NSSize(width: 72 + lyricsWidth + 8, height: 28)
         let stripBar = NSTitlebarAccessoryViewController()
         stripBar.view = strip
         stripBar.layoutAttribute = .trailing
@@ -208,13 +236,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKNaviga
         webView?.evaluateJavaScript("document.querySelector('ytmusic-player-bar .\(button)-button button')?.click()")
     }
 
-    // Updates the icon and title whenever the page reports a change.
+    // Updates the icon, title and Lyrics button whenever the page reports a change.
     func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
         // Links can take the panel to other sites; only YouTube Music may change the menu bar.
         guard message.frameInfo.securityOrigin.host == musicURL.host,
               let state = message.body as? [String: Any] else { return }
         song = (state["playing"] as? Bool ?? false, state["title"] as? String ?? "", state["artist"] as? String ?? "")
         updateStatus()
+        // The label says what a press will do.
+        lyricsButton.title = state["lyrics"] as? Bool == true ? "Up next" : "Lyrics"
     }
 
     // Shows the current song: the play or pause icon, then the title with the artist dimmed after it.
@@ -290,6 +320,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKNaviga
         button.image = NSImage(systemSymbolName: symbol, accessibilityDescription: tip)
         button.alternateImage = NSImage(systemSymbolName: onSymbol, accessibilityDescription: tip)
         button.toolTip = tip
+    }
+
+    // Shows YouTube's own lyrics: picks the Lyrics tab of the now-playing view, then opens the view
+    // if it's closed. If the lyrics are already showing, goes back to Up next instead.
+    // Tabs are found by position (Up next first, Lyrics second), so this works in every language.
+    // For songs without lyrics YouTube disables the tab, and nothing happens.
+    @objc func showLyrics() {
+        webView?.evaluateJavaScript("""
+            (tabs => {
+                const showing = document.querySelector('ytmusic-app-layout')?.hasAttribute('player-page-open')
+                    && tabs[1]?.getAttribute('aria-selected') === 'true';
+                tabs[showing ? 0 : 1]?.click();
+            })(document.querySelectorAll('ytmusic-player-page tp-yt-paper-tab.tab-header'))
+            """)
+        showNowPlaying(true)
     }
 
     // Compact mode: a small panel showing YouTube's own now-playing view, with its Up next list.
@@ -374,6 +419,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKNaviga
     func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
         song = (false, "", "")
         updateStatus()
+        lyricsButton.title = "Lyrics"
     }
 
     // If macOS kills the page's process, e.g. under memory pressure, start it again.

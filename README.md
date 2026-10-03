@@ -9,6 +9,7 @@ YouTube Music in your Mac's menu bar. Hover the icon to open music.youtube.com i
 - **Scroll to skip:** scroll down on the icon for the next song, up for the previous one.
 - **Pin:** the pin in the panel's top corner keeps it open while you browse or type.
 - **Compact player:** the button next to the pin narrows the panel to YouTube Music's own now-playing view, with its Up next list. Press it again to go back.
+- **Lyrics:** the Lyrics button in the panel's top corner opens YouTube Music's own lyrics for the current song. While they show, it reads Up next and takes you back.
 - **Now playing in the menu bar:** the song title and artist sit next to the icon, which switches between play and pause. Right-click → Show Artist turns the artist off.
 - **Separate login:** the app keeps its own Google sign-in, apart from Safari and other apps. Right-click → Sign Out clears it.
 - **Light:** about 12 MB until the panel is first opened. The page loads only then.
