@@ -8,10 +8,13 @@ version=$(sed -n 's/^version=//p' build.sh)
 tag="v$version"
 zip="YTMM-$version.zip"
 
-# Release only committed, pushed code, and never reuse a version.
+# Release only committed, pushed code from main that passed GitHub's build check, and never reuse a version.
+[ "$(git branch --show-current)" = main ] || { echo "Release from main."; exit 1; }
 [ -z "$(git status --porcelain)" ] || { echo "Commit your changes first."; exit 1; }
 git fetch -q --tags origin
 [ "$(git rev-parse HEAD)" = "$(git rev-parse "@{upstream}")" ] || { echo "Push your commits first."; exit 1; }
+[ "$(gh run list --commit "$(git rev-parse HEAD)" --workflow build.yml --json conclusion -q '.[0].conclusion')" = success ] \
+    || { echo "Wait for GitHub's build check to pass for this commit."; exit 1; }
 ! git rev-parse -q --verify "refs/tags/$tag" >/dev/null || { echo "$tag already exists; bump version in build.sh."; exit 1; }
 
 SIGN_IDENTITY="${SIGN_IDENTITY:-codexjdub}" ./build.sh

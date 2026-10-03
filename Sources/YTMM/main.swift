@@ -8,6 +8,23 @@ let storeID = UUID(uuidString: "5C1B6E2A-3F4D-4A8B-9E7C-2D1F0A6B8C3E")!
 // YouTube's player <video>, or the first video if YouTube renames it.
 let playerVideo = "(document.querySelector('video.html5-main-video') || document.querySelector('video'))"
 
+// YouTube's now-playing view: whether it's open, and its tabs (Up next always comes first).
+let nowPlayingOpen = "!!document.querySelector('ytmusic-app-layout')?.hasAttribute('player-page-open')"
+let playerTabs = "document.querySelectorAll('ytmusic-player-page tp-yt-paper-tab.tab-header')"
+
+// The now-playing view's Lyrics tab, or undefined if it has none (e.g. on podcast episodes).
+// It's found by the kind of page it opens, as YouTube's page data lists it, so any language works.
+// If that data can't be read, the second tab is the fallback.
+let lyricsTab = """
+((tabs, data) => data ? tabs[data.findIndex(tab => tab.tabRenderer?.endpoint?.browseEndpoint
+        ?.browseEndpointContextSupportedConfigs?.browseEndpointContextMusicConfig?.pageType
+        === 'MUSIC_PAGE_TYPE_TRACK_LYRICS')] : tabs[1])(
+    \(playerTabs),
+    document.querySelector('ytmusic-player-page')?.watchNextResponse?.contents
+        ?.singleColumnMusicWatchNextResultsRenderer?.tabbedRenderer?.watchNextTabbedResultsRenderer?.tabs)
+"""
+let lyricsShowing = "(\(nowPlayingOpen) && \(lyricsTab)?.getAttribute('aria-selected') === 'true')"
+
 // Runs in the page and tells the app when playback starts, pauses or changes song,
 // and whether the lyrics are showing.
 // The title and artist are read from the player bar, since the ones published for macOS can be shortened
@@ -35,11 +52,9 @@ let playerScript = """
         // Watch the song info, the now-playing view and its tabs themselves, so changes that come
         // without media events still get through.
         const info = document.querySelector('ytmusic-player-bar .content-info-wrapper');
-        const layout = document.querySelector('ytmusic-app-layout');
-        const tabs = document.querySelectorAll('ytmusic-player-page tp-yt-paper-tab.tab-header');
         watchInfo(info);
-        watchLayout(layout);
-        watchTabs(tabs[0]?.parentElement);
+        watchLayout(document.querySelector('ytmusic-app-layout'));
+        watchTabs(\(playerTabs)[0]?.parentElement);
         const title = info?.querySelector('.title')?.textContent.trim();
         const published = navigator.mediaSession.metadata;
         // The artist line can go on with the album and year, or a video's views; keep what's before the first "•".
@@ -47,13 +62,13 @@ let playerScript = """
             ? { playing: !!video && !video.paused, title,
                 artist: info.querySelector('.byline')?.textContent.split('•')[0].trim() || '' }
             : { playing: !!video && !video.paused, title: published?.title || '', artist: published?.artist || '' };
-        // Lyrics is the second tab (by position, so any language works).
-        state.lyrics = !!layout?.hasAttribute('player-page-open') && tabs[1]?.getAttribute('aria-selected') === 'true';
+        state.lyrics = \(lyricsShowing);
         const json = JSON.stringify(state);
         if (json !== last) { last = json; webkit.messageHandlers.player.postMessage(state); }
     };
     // Media events don't bubble, but a capturing listener on document still sees them.
-    for (const type of ['play', 'playing', 'pause', 'loadeddata'])
+    // Clicks start the watching too, so the Lyrics button follows the page even before anything plays.
+    for (const type of ['play', 'playing', 'pause', 'loadeddata', 'click'])
         document.addEventListener(type, report, true);
 })();
 """
@@ -68,7 +83,8 @@ final class StripButton: NSButton {
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 }
 
-final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKNavigationDelegate, WKScriptMessageHandler {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
+                         WKUIDelegate, WKNavigationDelegate, WKScriptMessageHandler {
     let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     let panel = NSPanel(
         contentRect: NSRect(x: 0, y: 0, width: 480, height: 720),
@@ -88,6 +104,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKNaviga
     var scrollTotal: CGFloat = 0
     var scrollSkipped = false
     var lastWheelSkip: TimeInterval = 0
+
+    // Full and compact each have their own size: the one you last gave that mode by resizing it.
+    // It's saved only when you resize by hand, so a panel squeezed onto a smaller screen doesn't
+    // shrink the size you chose.
+    var sizeKey: String { compactButton.state == .on ? "compactSize" : "fullSize" }
+    var chosenSize: NSSize {
+        let saved = NSSizeFromString(UserDefaults.standard.string(forKey: sizeKey) ?? "")
+        if saved != .zero { return saved }
+        return compactButton.state == .on ? NSSize(width: 400, height: 680) : NSSize(width: 480, height: 720)
+    }
+
+    func windowDidEndLiveResize(_ notification: Notification) {
+        UserDefaults.standard.set(NSStringFromSize(panel.frame.size), forKey: sizeKey)
+    }
 
     // Created on first open, so the app stays small until it's used.
     func makeWebView() -> WKWebView {
@@ -150,7 +180,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKNaviga
         for kind: NSWindow.ButtonType in [.closeButton, .miniaturizeButton, .zoomButton] {
             panel.standardWindowButton(kind)?.isHidden = true
         }
-        panel.setFrameAutosaveName("Panel")
+        panel.delegate = self
 
         // Buttons in the panel's top strip: lyrics, and the toggles for compact player and pin (keeps the panel open).
         lyricsButton.isBordered = false
@@ -278,9 +308,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKNaviga
     // make the item too wide for the menu bar, and macOS would hide it, icon and all.
     func fitted(_ text: String, font: NSFont, maxWidth: CGFloat = 150) -> String {
         guard width(text, font) > maxWidth else { return text }
-        var cut = text
-        while !cut.isEmpty && width(cut + "…", font) > maxWidth { cut.removeLast() }
-        return cut.trimmingCharacters(in: .whitespaces) + "…"
+        // Find the longest start of the text that fits with "…", halving the range each time.
+        let characters = Array(text)
+        var fits = 0, tooLong = characters.count
+        while tooLong - fits > 1 {
+            let mid = (fits + tooLong) / 2
+            if width(String(characters[..<mid]) + "…", font) <= maxWidth { fits = mid } else { tooLong = mid }
+        }
+        return String(characters[..<fits]).trimmingCharacters(in: .whitespaces) + "…"
     }
 
     func width(_ text: String, _ font: NSFont) -> CGFloat {
@@ -289,9 +324,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKNaviga
 
     @objc func showPanel() {
         openTimer?.invalidate()
-        guard !panel.isVisible else { return }
+        // Stays closed if the icon isn't on any screen, e.g. while displays change.
+        guard !panel.isVisible, place() else { return }
         if webView == nil { webView = makeWebView() }
-        place()
         panel.orderFrontRegardless()
 
         ticksOutside = 0
@@ -299,19 +334,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKNaviga
             timeInterval: 0.25, target: self, selector: #selector(checkMouse), userInfo: nil, repeats: true)
     }
 
-    // Hangs the panel from the menu bar under the icon, optionally at a new size, kept on screen.
-    // When the menu bar auto-hides, visibleFrame reaches the top of the screen, so the icon's
-    // own window marks where the menu bar ends.
-    func place(size: NSSize? = nil) {
-        guard let bar = statusItem.button?.window, let screen = bar.screen?.visibleFrame else { return }
+    // Hangs the panel from the menu bar under the icon, at the current mode's size, kept on screen.
+    // Returns false if the icon isn't on a screen. When the menu bar auto-hides, visibleFrame reaches
+    // the top of the screen, so the icon's own window marks where the menu bar ends.
+    @discardableResult
+    func place() -> Bool {
+        guard let bar = statusItem.button?.window, let screen = bar.screen?.visibleFrame else { return false }
         let top = min(bar.frame.minY, screen.maxY)
-        var frame = panel.frame
-        if let size { frame.size = size }
+        var frame = NSRect(origin: .zero, size: chosenSize)
         frame.size.width = min(frame.width, screen.width)
         frame.size.height = min(frame.height, top - screen.minY)
         frame.origin.x = min(max(bar.frame.midX - frame.width / 2, screen.minX), screen.maxX - frame.width)
         frame.origin.y = top - frame.height
         panel.setFrame(frame, display: true)
+        return true
     }
 
     func setUpStripButton(_ button: NSButton, _ symbol: String, on onSymbol: String, tip: String) {
@@ -322,57 +358,69 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKNaviga
         button.toolTip = tip
     }
 
-    // Shows YouTube's own lyrics: picks the Lyrics tab of the now-playing view, then opens the view
+    // Shows YouTube's own lyrics: picks the Lyrics tab of the now-playing view and opens the view
     // if it's closed. If the lyrics are already showing, goes back to Up next instead.
-    // Tabs are found by position (Up next first, Lyrics second), so this works in every language.
-    // For songs without lyrics YouTube disables the tab, and nothing happens.
+    // A fresh page has no tabs until the view first opens, so then the tab is picked once they appear.
+    // For songs without lyrics (YouTube disables the tab) and podcast episodes (no tab), nothing happens.
     @objc func showLyrics() {
         webView?.evaluateJavaScript("""
-            (tabs => {
-                const showing = document.querySelector('ytmusic-app-layout')?.hasAttribute('player-page-open')
-                    && tabs[1]?.getAttribute('aria-selected') === 'true';
-                tabs[showing ? 0 : 1]?.click();
-            })(document.querySelectorAll('ytmusic-player-page tp-yt-paper-tab.tab-header'))
-            """)
-        showNowPlaying(true)
+            (() => {
+                if (\(lyricsShowing)) { \(playerTabs)[0]?.click(); return false; }
+                if (!\(playerTabs).length) {
+                    const pick = tries => {
+                        const tab = \(lyricsTab);
+                        if (tab) tab.click();
+                        else if (tries && !\(playerTabs).length) setTimeout(() => pick(tries - 1), 100);
+                    };
+                    pick(20);
+                    return true;
+                }
+                const tab = \(lyricsTab);
+                if (!tab || tab.getAttribute('aria-disabled') === 'true') return false;
+                tab.click();
+                return true;
+            })()
+            """) { [self] open, _ in
+            if open as? Bool == true { showNowPlaying(true) }
+        }
     }
 
     // Compact mode: a small panel showing YouTube's own now-playing view, with its Up next list.
-    // Each mode remembers its own size: the size you leave a mode at is what it comes back to.
     @objc func toggleCompact() {
         let compact = compactButton.state == .on
-        let defaults = UserDefaults.standard
-        defaults.set(NSStringFromSize(panel.frame.size), forKey: compact ? "fullSize" : "compactSize")
-        defaults.set(compact, forKey: "compact")
-        let saved = NSSizeFromString(defaults.string(forKey: compact ? "compactSize" : "fullSize") ?? "")
-        place(size: saved != .zero ? saved : compact ? NSSize(width: 400, height: 680) : NSSize(width: 480, height: 720))
-        // Give the page a moment to lay out at the new width before finding YouTube's controls.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [self] in showNowPlaying(compact) }
+        UserDefaults.standard.set(compact, forKey: "compact")
+        place()
+        showNowPlaying(compact, afterResize: true)
     }
 
     // Opens or closes YouTube's now-playing view by clicking YouTube's own control for it:
     // the open/close toggle in the wide layout, or the mini player / minimize button in the narrow one.
     // The page keeps hidden copies of some controls, so a control counts only if it's what's
-    // actually under its own center.
-    func showNowPlaying(_ open: Bool) {
+    // actually under its own center. After the panel resizes, it first waits for the page to take
+    // the new size (at most 0.4 s), and keeps looking for up to a second while YouTube catches up.
+    func showNowPlaying(_ open: Bool, afterResize: Bool = false) {
         guard let webView else { return }
-        webView.evaluateJavaScript("""
-            (open => {
-                const layout = document.querySelector('ytmusic-app-layout');
-                if (!layout || layout.hasAttribute('player-page-open') === open) return null;
-                const targets = open
-                    ? ['ytmusic-player-bar .toggle-player-page-button', 'ytmusic-player-bar .content-info-wrapper']
-                    : ['ytmusic-player-page .collapse-button', 'ytmusic-player-bar .toggle-player-page-button'];
+        webView.callAsyncJavaScript("""
+            if (afterResize)
+                await new Promise(done => { addEventListener('resize', done, { once: true }); setTimeout(done, 400); });
+            const targets = open
+                ? ['ytmusic-player-bar .toggle-player-page-button', 'ytmusic-player-bar .content-info-wrapper']
+                : ['ytmusic-player-page .collapse-button', 'ytmusic-player-bar .toggle-player-page-button'];
+            for (let tries = 0; tries < 10; tries++) {
+                if (\(nowPlayingOpen) === open) return null;
                 for (const target of targets)
                     for (const element of document.querySelectorAll(target)) {
                         const r = element.getBoundingClientRect(), x = r.left + r.width / 2, y = r.top + r.height / 2;
                         const hit = document.elementFromPoint(x, y);
                         if (hit && element.contains(hit)) return [x, y];
                     }
-                return null;
-            })(\(open))
-            """) { [self] result, _ in
-            if let xy = result as? [Double], xy.count == 2 { click(webView, atPagePoint: NSPoint(x: xy[0], y: xy[1])) }
+                await new Promise(done => setTimeout(done, 100));
+            }
+            return null;
+            """, arguments: ["open": open, "afterResize": afterResize], in: nil, in: .page) { [self] result in
+            if case .success(let value) = result, let xy = value as? [Double], xy.count == 2 {
+                click(webView, atPagePoint: NSPoint(x: xy[0], y: xy[1]))
+            }
         }
     }
 
