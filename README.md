@@ -1,4 +1,4 @@
-# YTMM
+# YTMM: YouTube Music Menu
 
 YouTube Music in your Mac's menu bar. Hover the icon to open music.youtube.com in a panel; move the mouse away and it hides while the music keeps playing.
 
