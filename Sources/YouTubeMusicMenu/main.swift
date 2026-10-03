@@ -62,7 +62,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKScript
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         let button = statusItem.button!
-        button.image = NSImage(systemSymbolName: "play.rectangle", accessibilityDescription: "YouTube Music")
+        button.image = NSImage(systemSymbolName: "play.circle", accessibilityDescription: "YouTube Music")
         button.imagePosition = .imageLeading
         button.target = self
         button.action = #selector(iconClicked)
@@ -131,7 +131,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKScript
         let title = state["title"] as? String ?? ""
         hasSong = !title.isEmpty
         button.image = NSImage(
-            systemSymbolName: playing || !hasSong ? "play.rectangle" : "pause.rectangle",
+            systemSymbolName: playing || !hasSong ? "play.circle" : "pause.circle",
             accessibilityDescription: "YouTube Music")
         button.title = title.count > 20 ? title.prefix(20).trimmingCharacters(in: .whitespaces) + "…" : title
     }
