@@ -6,6 +6,8 @@ cd "$(dirname "$0")"
 swift build -c release
 
 app=YouTubeMusicMenu.app
+# Quit a running copy, so `open` launches the new build instead of reactivating the old one.
+pkill -x YouTubeMusicMenu && while pgrep -x YouTubeMusicMenu >/dev/null; do sleep 0.1; done || true
 rm -rf "$app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 cp .build/release/YouTubeMusicMenu "$app/Contents/MacOS/"

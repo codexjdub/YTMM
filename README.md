@@ -14,12 +14,14 @@ Right-click the icon for Reload, Sign Out and Quit.
 
 ## Build
 
-Requires macOS 14 or later and Swift (Xcode's Command Line Tools are enough).
+Requires macOS 14 or later and Swift 6 or later (Xcode's Command Line Tools 16 or later are enough).
 
 ```sh
 ./build.sh
 open YouTubeMusicMenu.app
 ```
+
+`build.sh` quits a running copy first, so `open` starts the new build.
 
 To start it at login, add `YouTubeMusicMenu.app` in System Settings → General → Login Items.
 
