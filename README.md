@@ -1,6 +1,6 @@
-# YouTubeMusicMenu
+# YTMM
 
-A small macOS menu bar app for YouTube Music. Hover the icon to open music.youtube.com in a panel; move the mouse away and it hides while the music keeps playing.
+YouTube Music in your Mac's menu bar. Hover the icon to open music.youtube.com in a panel; move the mouse away and it hides while the music keeps playing.
 
 ## Features
 
@@ -12,21 +12,33 @@ A small macOS menu bar app for YouTube Music. Hover the icon to open music.youtu
 
 Right-click the icon for Reload, Sign Out and Quit.
 
+## Install
+
+Runs on macOS 14 or later, on Apple silicon and Intel Macs.
+
+1. Download `YTMM-<version>.zip` from [Releases](https://github.com/codexjdub/YTMM/releases) and unzip it.
+2. Move `YTMM.app` to Applications and open it.
+3. macOS blocks it the first time, because the app isn't notarized by Apple. Open System Settings → Privacy & Security, scroll down, and click **Open Anyway** next to YTMM. You only need to do this once.
+
+To start it at login, add `YTMM.app` in System Settings → General → Login Items.
+
 ## Build
 
-Requires macOS 14 or later and Swift 6 or later (Xcode's Command Line Tools 16 or later are enough).
+Requires Swift 6 or later (Xcode's Command Line Tools 16 or later are enough).
 
 ```sh
 ./build.sh
-open YouTubeMusicMenu.app
+open YTMM.app
 ```
 
-`build.sh` quits a running copy first, so `open` starts the new build.
-
-To start it at login, add `YouTubeMusicMenu.app` in System Settings → General → Login Items.
+`build.sh` quits a running copy first, so `open` starts the new build. Set `SIGN_IDENTITY` to sign with a certificate from your keychain; otherwise the app is signed ad hoc.
 
 ## Notes
 
 - The song title and play/pause come from the YouTube Music page itself, so a redesign of that page may break them until the script in `main.swift` is updated.
 - On a free account, ads show their own titles in the menu bar while they play.
 - Not affiliated with YouTube or Google.
+
+## License
+
+MIT

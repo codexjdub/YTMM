@@ -2,7 +2,7 @@
 import PackageDescription
 
 let package = Package(
-    name: "YouTubeMusicMenu",
+    name: "YTMM",
     platforms: [.macOS(.v14)],
-    targets: [.executableTarget(name: "YouTubeMusicMenu")]
+    targets: [.executableTarget(name: "YTMM")]
 )
