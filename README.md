@@ -33,6 +33,8 @@ open YTMM.app
 
 `build.sh` quits a running copy first, so `open` starts the new build. Set `SIGN_IDENTITY` to sign with a certificate from your keychain; otherwise the app is signed ad hoc.
 
+To publish a release, bump `version` in `build.sh`, commit and push, then run `./release.sh`.
+
 ## Notes
 
 - The song title and play/pause come from the YouTube Music page itself, so a redesign of that page may break them until the script in `main.swift` is updated.
