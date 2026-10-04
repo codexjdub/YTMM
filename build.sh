@@ -36,5 +36,7 @@ cat > "$app/Contents/Info.plist" <<EOF
 </dict>
 </plist>
 EOF
+# Clear file attributes (e.g. the Finder info iCloud Drive adds), which codesign refuses.
+xattr -cr "$app"
 codesign --force --sign "${SIGN_IDENTITY:--}" "$app"
 echo "Built $app"
