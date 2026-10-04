@@ -5,7 +5,7 @@ set -e
 cd "$(dirname "$0")"
 
 # The app's version; release.sh publishes it as v<version>.
-version=1.0.1
+version=1.0.2
 
 flags="-c release --arch arm64 --arch x86_64"
 swift build $flags
